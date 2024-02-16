@@ -293,7 +293,7 @@ main(int argc, char *argv[])
 	struct wl_event_source *sigterm_source =
 		wl_event_loop_add_signal(event_loop, SIGTERM, handle_signal, &server.wl_display);
 
-	server.backend = wlr_backend_autocreate(server.wl_display, &server.session);
+	server.backend = wlr_backend_autocreate(event_loop, &server.session);
 	if (!server.backend) {
 		wlr_log(WLR_ERROR, "Unable to create the wlroots backend");
 		ret = 1;
@@ -324,7 +324,7 @@ main(int argc, char *argv[])
 	wl_list_init(&server.views);
 	wl_list_init(&server.outputs);
 
-	server.output_layout = wlr_output_layout_create();
+	server.output_layout = wlr_output_layout_create(server.wl_display);
 	if (!server.output_layout) {
 		wlr_log(WLR_ERROR, "Unable to create output layout");
 		ret = 1;
