@@ -21,6 +21,7 @@
 #if WLR_HAS_X11_BACKEND
 #include <wlr/backend/x11.h>
 #endif
+#include <wlr/render/swapchain.h>
 #include <wlr/render/wlr_renderer.h>
 #include <wlr/types/wlr_compositor.h>
 #include <wlr/types/wlr_data_device.h>
@@ -129,31 +130,6 @@ output_disable(struct cg_output *output)
 	wlr_output_state_set_enabled(&state, false);
 	wlr_output_commit_state(wlr_output, &state);
 	output_layout_remove(output);
-}
-
-static bool
-output_apply_config(struct cg_output *output, struct wlr_output_configuration_head_v1 *head, bool test_only)
-{
-	struct wlr_output_state state = {0};
-	wlr_output_head_v1_state_apply(&head->state, &state);
-
-	if (test_only) {
-		bool ret = wlr_output_test_state(output->wlr_output, &state);
-		return ret;
-	}
-
-	/* Apply output configuration */
-	if (!wlr_output_commit_state(output->wlr_output, &state)) {
-		return false;
-	}
-
-	if (head->state.enabled) {
-		output_layout_add(output, head->state.x, head->state.y);
-	} else {
-		output_layout_remove(output);
-	}
-
-	return true;
 }
 
 static void
@@ -356,17 +332,68 @@ output_set_window_title(struct cg_output *output, const char *title)
 static bool
 output_config_apply(struct cg_server *server, struct wlr_output_configuration_v1 *config, bool test_only)
 {
-	struct wlr_output_configuration_head_v1 *head;
+	bool ok = false;
 
+	size_t states_len;
+	struct wlr_backend_output_state *states = wlr_output_configuration_v1_build_state(config, &states_len);
+	if (states == NULL) {
+		return false;
+	}
+
+	for (size_t i = 0; i < states_len; i++) {
+		struct wlr_backend_output_state *state = &states[i];
+
+		bool enabled = state->output->enabled;
+		if (state->base.committed & WLR_OUTPUT_STATE_ENABLED) {
+			enabled = state->base.enabled;
+		}
+		if (!enabled) {
+			continue;
+		}
+
+		struct wlr_swapchain *swapchain = NULL;
+		if (!wlr_output_configure_primary_swapchain(state->output, &state->base, &swapchain)) {
+			goto out;
+		}
+
+		struct wlr_buffer *buffer = wlr_swapchain_acquire(swapchain, NULL);
+		wlr_swapchain_destroy(swapchain);
+		if (buffer == NULL) {
+			goto out;
+		}
+
+		wlr_output_state_set_buffer(&state->base, buffer);
+		wlr_buffer_unlock(buffer);
+	}
+
+	ok = wlr_backend_test(server->backend, states, states_len);
+	if (!ok || test_only) {
+		goto out;
+	}
+
+	ok = wlr_backend_commit(server->backend, states, states_len);
+	if (!ok) {
+		goto out;
+	}
+
+	struct wlr_output_configuration_head_v1 *head;
 	wl_list_for_each (head, &config->heads, link) {
 		struct cg_output *output = head->state.output->data;
 
-		if (!output_apply_config(output, head, test_only)) {
-			return false;
+		if (head->state.enabled) {
+			wlr_output_configure_primary_swapchain(head->state.output, NULL, &head->state.output->swapchain);
+			output_layout_add(output, head->state.x, head->state.y);
+		} else {
+			output_layout_remove(output);
 		}
 	}
 
-	return true;
+out:
+	for (size_t i = 0; i < states_len; i++) {
+		wlr_output_state_finish(&states[i].base);
+	}
+	free(states);
+	return ok;
 }
 
 void
