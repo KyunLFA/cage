@@ -29,6 +29,7 @@
 #include <wlr/types/wlr_output.h>
 #include <wlr/types/wlr_output_layout.h>
 #include <wlr/types/wlr_output_management_v1.h>
+#include <wlr/types/wlr_output_swapchain_manager.h>
 #include <wlr/types/wlr_scene.h>
 #include <wlr/types/wlr_xdg_shell.h>
 #include <wlr/util/log.h>
@@ -340,33 +341,10 @@ output_config_apply(struct cg_server *server, struct wlr_output_configuration_v1
 		return false;
 	}
 
-	for (size_t i = 0; i < states_len; i++) {
-		struct wlr_backend_output_state *state = &states[i];
+	struct wlr_output_swapchain_manager swapchain_manager;
+	wlr_output_swapchain_manager_init(&swapchain_manager, server->backend);
 
-		bool enabled = state->output->enabled;
-		if (state->base.committed & WLR_OUTPUT_STATE_ENABLED) {
-			enabled = state->base.enabled;
-		}
-		if (!enabled) {
-			continue;
-		}
-
-		struct wlr_swapchain *swapchain = NULL;
-		if (!wlr_output_configure_primary_swapchain(state->output, &state->base, &swapchain)) {
-			goto out;
-		}
-
-		struct wlr_buffer *buffer = wlr_swapchain_acquire(swapchain, NULL);
-		wlr_swapchain_destroy(swapchain);
-		if (buffer == NULL) {
-			goto out;
-		}
-
-		wlr_output_state_set_buffer(&state->base, buffer);
-		wlr_buffer_unlock(buffer);
-	}
-
-	ok = wlr_backend_test(server->backend, states, states_len);
+	ok = wlr_output_swapchain_manager_prepare(&swapchain_manager, states, states_len);
 	if (!ok || test_only) {
 		goto out;
 	}
@@ -376,12 +354,13 @@ output_config_apply(struct cg_server *server, struct wlr_output_configuration_v1
 		goto out;
 	}
 
+	wlr_output_swapchain_manager_apply(&swapchain_manager);
+
 	struct wlr_output_configuration_head_v1 *head;
 	wl_list_for_each (head, &config->heads, link) {
 		struct cg_output *output = head->state.output->data;
 
 		if (head->state.enabled) {
-			wlr_output_configure_primary_swapchain(head->state.output, NULL, &head->state.output->swapchain);
 			output_layout_add(output, head->state.x, head->state.y);
 		} else {
 			output_layout_remove(output);
@@ -389,6 +368,7 @@ output_config_apply(struct cg_server *server, struct wlr_output_configuration_v1
 	}
 
 out:
+	wlr_output_swapchain_manager_finish(&swapchain_manager);
 	for (size_t i = 0; i < states_len; i++) {
 		wlr_output_state_finish(&states[i].base);
 	}
